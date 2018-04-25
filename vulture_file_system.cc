@@ -28,6 +28,7 @@ static const int kVultureGetChildrenMaxKeys = 100;
 
 namespace {
 
+
 Status ParseVulturePath(const string& fname, bool empty_object_ok, string* bucket,
                         string* object) {
   if (!bucket || !object) {
@@ -61,8 +62,9 @@ class VultureRandomAccessFile : public RandomAccessFile {
 
   Status Read(uint64 offset, size_t n, StringPiece* result,
               char* scratch) const override {
-    scratch = "hello world";
-    *result = StringPiece(scratch, sizeof("hello world"));
+    string object = io::JoinPath(bucket_, object_);
+    TF_RETURN_IF_ERROR(this->vulture_client_->GetObject(
+          object, offset, offset + n - 1, result, scratch));
     return Status::OK();
   }
 
@@ -133,6 +135,11 @@ VultureFileSystem::~VultureFileSystem() {}
 // Initializes vulture_client_, if needed, and returns it.
 std::shared_ptr<VultureClient> VultureFileSystem::GetVultureClient() {
   std::lock_guard<mutex> lock(this->client_lock_);
+
+  // TODO: lock?
+  if (this->vulture_client_ == nullptr) {
+    this->vulture_client_ = std::shared_ptr<VultureClient>(new VultureClient());
+  }
 
   return this->vulture_client_;
 }
@@ -223,14 +230,18 @@ Status VultureFileSystem::Stat(const string& fname, FileStatistics* stats) {
   string bucket, object;
   TF_RETURN_IF_ERROR(ParseVulturePath(fname, true, &bucket, &object));
 
-  stats->length = sizeof("hello world");
+  object = io::JoinPath(bucket, object);
+
+  TF_RETURN_IF_ERROR(this->GetVultureClient()->StatObject(
+        object, &stats->length));
+
+  // TODO: hard coded by now
   stats->is_directory = 0;
-  // TODO: HeadObject or ListDirectory
   return Status::OK();
 }
 
 Status VultureFileSystem::GetMatchingPaths(const string& pattern,
-                                      std::vector<string>* results) {
+                                           std::vector<string>* results) {
   return internal::GetMatchingPaths(this, Env::Default(), pattern, results);
 }
 

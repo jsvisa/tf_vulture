@@ -14,12 +14,27 @@ limitations under the License.
 ==============================================================================*/
 #ifndef TENSORFLOW_CORE_PLATFORM_VULTURE_VULTURE_CLIENT_H_
 #define TENSORFLOW_CORE_PLATFORM_VULTURE_VULTURE_CLIENT_H_
+#include "tensorflow/core/platform/cloud/curl_http_request.h"
+#include "tensorflow/core/platform/env.h"
 
 namespace tensorflow {
 class VultureClient {
   public:
     VultureClient();
+    explicit VultureClient(
+        std::unique_ptr<HttpRequest::Factory> http_request_factory,
+        Env *env);
     ~VultureClient();
+
+    Status GetObject(const string &object, int64 start, int64 end, StringPiece* result, char* scratch);
+    Status StatObject(const string &object, int64* result);
+
+  private:
+    std::unique_ptr<HttpRequest::Factory> http_request_factory_;
+    Env* env_;
+    string endpoint_;
+    long connectTimeoutMs_;
+    long requestTimeoutMs_;
 };
 } // namespace tensorflow
 
