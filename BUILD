@@ -33,6 +33,7 @@ tf_cc_binary(
         "//tensorflow/core:framework_headers_lib",
         "@curl",
         "@protobuf_archive//:protobuf_headers",
+        "//tensorflow/core/platform/cloud:curl_http_request",
     ],
 )
 
@@ -48,6 +49,7 @@ cc_library(
         "//tensorflow/core:lib",
         "//tensorflow/core:lib_internal",
         "@curl",
+        "//tensorflow/core/platform/cloud:curl_http_request",
     ],
     alwayslink = 1,
 )
@@ -61,9 +63,9 @@ cc_library(
         "vulture_file_system.h",
     ],
     deps = [
-        ":vulture_logging",
         "//tensorflow/core:lib",
         "//tensorflow/core:lib_internal",
+        "//tensorflow/core/platform/cloud:curl_http_request",
     ],
     alwayslink = 1,
 )
