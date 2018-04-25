@@ -29,7 +29,7 @@ static const int kVultureGetChildrenMaxKeys = 100;
 namespace {
 
 Status ParseVulturePath(const string& fname, bool empty_object_ok, string* bucket,
-                   string* object) {
+                        string* object) {
   if (!bucket || !object) {
     return errors::Internal("bucket and object cannot be null.");
   }
@@ -61,6 +61,8 @@ class VultureRandomAccessFile : public RandomAccessFile {
 
   Status Read(uint64 offset, size_t n, StringPiece* result,
               char* scratch) const override {
+    scratch = "hello world";
+    *result = StringPiece(scratch, sizeof("hello world"));
     return Status::OK();
   }
 
@@ -221,6 +223,8 @@ Status VultureFileSystem::Stat(const string& fname, FileStatistics* stats) {
   string bucket, object;
   TF_RETURN_IF_ERROR(ParseVulturePath(fname, true, &bucket, &object));
 
+  stats->length = sizeof("hello world");
+  stats->is_directory = 0;
   // TODO: HeadObject or ListDirectory
   return Status::OK();
 }
