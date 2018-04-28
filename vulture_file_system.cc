@@ -16,7 +16,7 @@ limitations under the License.
 #include "tensorflow/core/platform/vulture/vulture_file_system.h"
 #include "tensorflow/core/lib/io/path.h"
 #include "tensorflow/core/lib/strings/str_util.h"
-#include "tensorflow/core/platform/file_system_helper.h"
+// #include "tensorflow/core/platform/file_system.h"
 #include "tensorflow/core/platform/mutex.h"
 
 #include <cstdlib>
@@ -63,6 +63,7 @@ class VultureRandomAccessFile : public RandomAccessFile {
   Status Read(uint64 offset, size_t n, StringPiece* result,
               char* scratch) const override {
     string object = io::JoinPath(bucket_, object_);
+    // LOG(INFO) << "Read " << object << " with offset: " << offset << " and size: " << n;
     TF_RETURN_IF_ERROR(this->vulture_client_->GetObject(
           object, offset, offset + n - 1, result, scratch));
     return Status::OK();
@@ -221,8 +222,10 @@ Status VultureFileSystem::GetChildren(const string& dir, std::vector<string>* re
     prefix.push_back('/');
   }
 
-  // TODO: listObjects
+  string object = io::JoinPath(bucket, prefix);
 
+  TF_RETURN_IF_ERROR(this->GetVultureClient()->ListObjects(
+        object, result));
   return Status::OK();
 }
 
@@ -233,16 +236,14 @@ Status VultureFileSystem::Stat(const string& fname, FileStatistics* stats) {
   object = io::JoinPath(bucket, object);
 
   TF_RETURN_IF_ERROR(this->GetVultureClient()->StatObject(
-        object, &stats->length));
+        object, stats));
 
-  // TODO: hard coded by now
-  stats->is_directory = 0;
   return Status::OK();
 }
 
 Status VultureFileSystem::GetMatchingPaths(const string& pattern,
                                            std::vector<string>* results) {
-  return internal::GetMatchingPaths(this, Env::Default(), pattern, results);
+  return Status::OK();
 }
 
 Status VultureFileSystem::DeleteFile(const string& fname) {

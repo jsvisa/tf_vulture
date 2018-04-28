@@ -12,11 +12,90 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+#include "include/json/json.h"
 #include "tensorflow/core/lib/io/path.h"
 #include "tensorflow/core/platform/vulture/vulture_client.h"
 #include "tensorflow/core/platform/cloud/curl_http_request.h"
 
 namespace tensorflow {
+
+constexpr char kVultureEOFIter[] = "eyJ0eXBlIjoiZiIsIml0ZXIiOnt9fQ==";
+constexpr int kVultureListLimit = 100;
+
+string MaybeAppendSlash(const string& name) {
+  if (name.empty()) {
+    return "/";
+  }
+  if (name.back() != '/') {
+    return strings::StrCat(name, "/");
+  }
+  return name;
+}
+
+// io::JoinPath() doesn't work in cases when we want an empty subpath
+// to result in an appended slash in order for directory markers
+// to be processed correctly: "gs://a/b" + "" should give "gs://a/b/".
+string JoinPath(const string& path, const string& subpath) {
+  return strings::StrCat(MaybeAppendSlash(path), subpath);
+}
+
+Status ParseJson(StringPiece json, Json::Value* result) {
+  Json::Reader reader;
+  if (!reader.parse(json.data(), json.data() + json.size(), *result)) {
+    return errors::Internal("Couldn't parse JSON response from GCS.");
+  }
+  return Status::OK();
+}
+
+Status ParseJson(const std::vector<char>& json, Json::Value* result) {
+  return ParseJson(StringPiece{json.data(), json.size()}, result);
+}
+
+/// Reads a JSON value with the given name from a parent JSON value.
+Status GetValue(const Json::Value& parent, const char* name,
+                Json::Value* result) {
+  *result = parent.get(name, Json::Value::null);
+  if (result->isNull()) {
+    return errors::Internal("The field '", name,
+                            "' was expected in the JSON response.");
+  }
+  return Status::OK();
+}
+
+/// Reads a string JSON value with the given name from a parent JSON value.
+Status GetStringValue(const Json::Value& parent, const char* name,
+                      string* result) {
+  Json::Value result_value;
+  TF_RETURN_IF_ERROR(GetValue(parent, name, &result_value));
+  if (!result_value.isString()) {
+    return errors::Internal(
+        "The field '", name,
+        "' in the JSON response was expected to be a string.");
+  }
+  *result = result_value.asString();
+  return Status::OK();
+}
+
+/// Reads a long JSON value with the given name from a parent JSON value.
+Status GetInt64Value(const Json::Value& parent, const char* name,
+                     int64* result) {
+  Json::Value result_value;
+  TF_RETURN_IF_ERROR(GetValue(parent, name, &result_value));
+  if (result_value.isNumeric()) {
+    *result = result_value.asInt64();
+    return Status::OK();
+  }
+  if (result_value.isString() &&
+      strings::safe_strto64(result_value.asCString(), result)) {
+    return Status::OK();
+  }
+  return errors::Internal(
+      "The field '", name,
+      "' in the JSON response was expected to be a number.");
+}
+
+
+
 VultureClient::VultureClient()
     : VultureClient(
         std::unique_ptr<HttpRequest::Factory>(new CurlHttpRequest::Factory()),
@@ -57,14 +136,29 @@ VultureClient::VultureClient(
 
 VultureClient::~VultureClient() {}
 
+// Creates an HttpRequest and sets several parameters that are common to all
+// requests.  All code (in GcsFileSystem) that creates an HttpRequest should
+// go through this method, rather than directly using http_request_factory_.
+Status VultureClient::CreateHttpRequest(std::unique_ptr<HttpRequest>* request) {
+  std::unique_ptr<HttpRequest> new_request{http_request_factory_->Create()};
+
+  new_request->AddHeader("User-Agent", "Vulture-TF");
+
+  // TODO: maybe add auth header
+
+  *request = std::move(new_request);
+  return Status::OK();
+}
+
 
 Status VultureClient::GetObject(const string &object, int64 start, int64 end, StringPiece* result, char* scratch) {
-  std::unique_ptr<HttpRequest> request(http_request_factory_->Create());
+  std::unique_ptr<HttpRequest> request;
+  TF_RETURN_IF_ERROR(CreateHttpRequest(&request));
+
   std::vector<char> response_buffer;
-  const string url = io::JoinPath(this->endpoint_, object);
+  const string url = JoinPath(this->endpoint_, object);
   const string bytes = strings::StrCat("bytes=", start, "-", end);
   request->SetUri(url);
-  request->AddHeader("User-Agent", "Vulture-TF");
   request->AddHeader("Range", bytes);
   request->SetResultBuffer(&response_buffer);
   TF_RETURN_IF_ERROR(request->Send());
@@ -91,12 +185,14 @@ Status VultureClient::GetObject(const string &object, int64 start, int64 end, St
   return Status::OK();
 }
 
-Status VultureClient::StatObject(const string &object, int64 *result) {
-  std::unique_ptr<HttpRequest> request(http_request_factory_->Create());
+Status VultureClient::StatObject(const string &object, FileStatistics *stats) {
+  std::unique_ptr<HttpRequest> request;
+  TF_RETURN_IF_ERROR(CreateHttpRequest(&request));
+
   std::vector<char> response_buffer;
-  const string url = io::JoinPath(this->endpoint_, object);
+  string url = JoinPath(this->endpoint_, object);
+  url = strings::StrCat(url, "?stat=true");
   request->SetUri(url);
-  request->AddHeader("User-Agent", "Vulture-TF");
   request->SetResultBuffer(&response_buffer);
   TF_RETURN_IF_ERROR(request->Send());
 
@@ -107,18 +203,84 @@ Status VultureClient::StatObject(const string &object, int64 *result) {
       case 404:
         return errors::NotFound("Object ", object, " does not exist");
       default:
-        return Status(error::INTERNAL, "GET object is not 2xx");
+        return Status(error::INTERNAL, "Stat object is not 2xx");
     }
   }
 
-  int64 n;
+  StringPiece response = StringPiece(response_buffer.data(), response_buffer.size());
 
-  string length = request->GetResponseHeader("Content-Length");
-  if (strings::safe_strto64(length, &n)) {
-    *result = n;
+  Json::Value root;
+  Json::Reader reader;
+  if (!reader.parse(response.begin(), response.end(), root)) {
+    return errors::Internal("Couldn't parse JSON response from Vulture server.");
   }
 
+  string type;
+  TF_RETURN_WITH_CONTEXT_IF_ERROR(GetStringValue(root, "type", &type),
+      " when get type field");
+  stats->is_directory = type == "folder";
+
+  TF_RETURN_WITH_CONTEXT_IF_ERROR(GetInt64Value(root, "length", &stats->length),
+      " when get length field");
+
+  // TODO: stats->mtime_nsec
+
   return Status::OK();
+}
+
+Status VultureClient::ListObjects(const string &object, std::vector<string>* result) {
+
+  string iter;
+  while(true) {
+    std::unique_ptr<HttpRequest> request;
+    TF_RETURN_IF_ERROR(CreateHttpRequest(&request));
+
+    std::vector<char> response_buffer;
+    string url = JoinPath(this->endpoint_, object);
+    url = strings::StrCat(url, "?list=true&limit=", kVultureListLimit, "&iter=", iter);
+    request->SetUri(url);
+    request->SetResultBuffer(&response_buffer);
+    TF_RETURN_IF_ERROR(request->Send());
+    // LOG(DEBUG) << "list url is " << url;
+
+    uint64 response_code = request->GetResponseCode();
+
+    if (response_code /100 != 2) {
+      return Status(error::INTERNAL, "List objects return not 2xx");
+    }
+
+    StringPiece response = StringPiece(response_buffer.data(), response_buffer.size());
+
+    Json::Value root;
+    Json::Reader reader;
+    if (!reader.parse(response.begin(), response.end(), root)) {
+      return errors::Internal("Couldn't parse JSON response from Vulture server.");
+    }
+
+    const auto items = root.get("files", Json::Value::null);
+    if (!items.isNull()) {
+      if (!items.isArray()) {
+        return errors::Internal(
+            "Expected an array 'files' in the Vulture response.");
+      }
+      for (size_t i = 0; i < items.size(); i++) {
+        const auto item = items.get(i, Json::Value::null);
+        if (!item.isObject()) {
+          return errors::Internal(
+              "Unexpected JSON format: 'files' should be a list of objects.");
+        }
+        string name;
+        TF_RETURN_IF_ERROR(GetStringValue(item, "name", &name));
+        // The name is relative to the 'dirname'. No need to remove the prefix name.
+        result->push_back(name);
+      }
+    }
+    TF_RETURN_IF_ERROR(GetStringValue(root, "iter", &iter));
+
+    if (iter == kVultureEOFIter) {
+      return Status::OK();
+    }
+  }
 }
 
 }

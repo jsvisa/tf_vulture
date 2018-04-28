@@ -33,6 +33,7 @@ tf_cc_binary(
         "//tensorflow/core:framework_headers_lib",
         "@curl",
         "@protobuf_archive//:protobuf_headers",
+        "@jsoncpp_git//:jsoncpp",
         "//tensorflow/core/platform/cloud:curl_http_request",
     ],
 )
@@ -50,6 +51,7 @@ cc_library(
         "//tensorflow/core:lib_internal",
         "@curl",
         "//tensorflow/core/platform/cloud:curl_http_request",
+        "@jsoncpp_git//:jsoncpp",
     ],
     alwayslink = 1,
 )

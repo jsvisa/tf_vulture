@@ -27,9 +27,11 @@ class VultureClient {
     ~VultureClient();
 
     Status GetObject(const string &object, int64 start, int64 end, StringPiece* result, char* scratch);
-    Status StatObject(const string &object, int64* result);
+    Status StatObject(const string &object, FileStatistics *stats);
+    Status ListObjects(const string &object, std::vector<string>* result);
 
   private:
+    Status CreateHttpRequest(std::unique_ptr<HttpRequest>* request);
     std::unique_ptr<HttpRequest::Factory> http_request_factory_;
     Env* env_;
     string endpoint_;
