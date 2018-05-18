@@ -26,7 +26,7 @@ class VultureClient {
         Env *env);
     ~VultureClient();
 
-    Status GetObject(const string &object, int64 start, int64 end, StringPiece* result, char* scratch);
+    Status GetObject(const string &object, int64 offset, int64 n, StringPiece* result, char* scratch);
     Status StatObject(const string &object, FileStatistics *stats);
     Status ListObjects(const string &object, std::vector<string>* result);
 

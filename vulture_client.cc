@@ -151,16 +151,15 @@ Status VultureClient::CreateHttpRequest(std::unique_ptr<HttpRequest>* request) {
 }
 
 
-Status VultureClient::GetObject(const string &object, int64 start, int64 end, StringPiece* result, char* scratch) {
+Status VultureClient::GetObject(const string &object, int64 offset, int64 n, StringPiece* result, char* scratch) {
   std::unique_ptr<HttpRequest> request;
   TF_RETURN_IF_ERROR(CreateHttpRequest(&request));
 
-  std::vector<char> response_buffer;
+  // std::vector<char> response_buffer;
   const string url = JoinPath(this->endpoint_, object);
-  const string bytes = strings::StrCat("bytes=", start, "-", end);
   request->SetUri(url);
-  request->AddHeader("Range", bytes);
-  request->SetResultBuffer(&response_buffer);
+  request->SetRange(offset, offset + n - 1);
+  request->SetResultBufferDirect(scratch, n);
   TF_RETURN_IF_ERROR(request->Send());
 
   uint64 response_code = request->GetResponseCode();
@@ -174,11 +173,6 @@ Status VultureClient::GetObject(const string &object, int64 start, int64 end, St
         return Status(error::INTERNAL, msg);
     }
   }
-
-  int n = response_buffer.size();
-  std::stringstream ss;
-  ss << response_buffer[0];
-  ss.read(scratch, n);
 
   *result = StringPiece(scratch, n);
 

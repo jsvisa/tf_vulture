@@ -65,7 +65,7 @@ class VultureRandomAccessFile : public RandomAccessFile {
     string object = io::JoinPath(bucket_, object_);
     // LOG(INFO) << "Read " << object << " with offset: " << offset << " and size: " << n;
     TF_RETURN_IF_ERROR(this->vulture_client_->GetObject(
-          object, offset, offset + n - 1, result, scratch));
+          object, offset, n, result, scratch));
     return Status::OK();
   }
 
