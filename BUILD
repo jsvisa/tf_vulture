@@ -35,6 +35,7 @@ tf_cc_binary(
         "@protobuf_archive//:protobuf_headers",
         "@jsoncpp_git//:jsoncpp",
         "//tensorflow/core/platform/cloud:curl_http_request",
+        "//tensorflow/core/platform/cloud:expiring_lru_cache",
     ],
 )
 
@@ -50,8 +51,8 @@ cc_library(
         "//tensorflow/core:lib",
         "//tensorflow/core:lib_internal",
         "@curl",
-        "//tensorflow/core/platform/cloud:curl_http_request",
         "@jsoncpp_git//:jsoncpp",
+        "//tensorflow/core/platform/cloud:curl_http_request",
     ],
     alwayslink = 1,
 )
@@ -68,6 +69,7 @@ cc_library(
         "//tensorflow/core:lib",
         "//tensorflow/core:lib_internal",
         "//tensorflow/core/platform/cloud:curl_http_request",
+        "//tensorflow/core/platform/cloud:expiring_lru_cache",
     ],
     alwayslink = 1,
 )

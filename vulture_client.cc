@@ -42,7 +42,7 @@ string JoinPath(const string& path, const string& subpath) {
 Status ParseJson(StringPiece json, Json::Value* result) {
   Json::Reader reader;
   if (!reader.parse(json.data(), json.data() + json.size(), *result)) {
-    return errors::Internal("Couldn't parse JSON response from GCS.");
+    return errors::Internal("Couldn't parse JSON response from Vulture.");
   }
   return Status::OK();
 }
@@ -94,6 +94,18 @@ Status GetInt64Value(const Json::Value& parent, const char* name,
       "' in the JSON response was expected to be a number.");
 }
 
+/// Reads a boolean JSON value with the given name from a parent JSON value.
+Status GetBoolValue(const Json::Value& parent, const char* name, bool* result) {
+  Json::Value result_value;
+  TF_RETURN_IF_ERROR(GetValue(parent, name, &result_value));
+  if (!result_value.isBool()) {
+    return errors::Internal(
+        "The field '", name,
+        "' in the JSON response was expected to be a boolean.");
+  }
+  *result = result_value.asBool();
+  return Status::OK();
+}
 
 
 VultureClient::VultureClient()
@@ -189,6 +201,7 @@ Status VultureClient::StatObject(const string &object, FileStatistics *stats) {
   request->SetUri(url);
   request->SetResultBuffer(&response_buffer);
   TF_RETURN_IF_ERROR(request->Send());
+  LOG(WARNING) << "Stat Object: " << object;
 
   uint64 response_code = request->GetResponseCode();
 
@@ -222,7 +235,7 @@ Status VultureClient::StatObject(const string &object, FileStatistics *stats) {
   return Status::OK();
 }
 
-Status VultureClient::ListObjects(const string &object, std::vector<string>* result) {
+Status VultureClient::ListObjects(const string &object, std::map<string, FileStatistics>* result) {
 
   string iter;
   while(true) {
@@ -235,7 +248,7 @@ Status VultureClient::ListObjects(const string &object, std::vector<string>* res
     request->SetUri(url);
     request->SetResultBuffer(&response_buffer);
     TF_RETURN_IF_ERROR(request->Send());
-    // LOG(DEBUG) << "list url is " << url;
+    LOG(WARNING) << "list url is " << url;
 
     uint64 response_code = request->GetResponseCode();
 
@@ -263,10 +276,26 @@ Status VultureClient::ListObjects(const string &object, std::vector<string>* res
           return errors::Internal(
               "Unexpected JSON format: 'files' should be a list of objects.");
         }
+
+        bool deleted = false;
+        Status status = GetBoolValue(item, "deleted", &deleted);
+        if (status.ok() && deleted) {
+          break;
+        }
+
         string name;
         TF_RETURN_IF_ERROR(GetStringValue(item, "name", &name));
+
+        FileStatistics stats;
+
+        string type;
+        TF_RETURN_IF_ERROR(GetStringValue(item, "type", &type));
+        stats.is_directory = type == "folder";
+
+        TF_RETURN_IF_ERROR(GetInt64Value(item, "length", &stats.length));
+
         // The name is relative to the 'dirname'. No need to remove the prefix name.
-        result->push_back(name);
+        result->insert(std::make_pair(name, stats));
       }
     }
     TF_RETURN_IF_ERROR(GetStringValue(root, "iter", &iter));

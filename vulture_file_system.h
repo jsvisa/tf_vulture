@@ -17,6 +17,7 @@ limitations under the License.
 
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/mutex.h"
+#include "tensorflow/core/platform/cloud/expiring_lru_cache.h"
 #include "tensorflow/core/platform/vulture/vulture_client.h"
 
 namespace tensorflow {
@@ -58,6 +59,8 @@ class VultureFileSystem : public FileSystem {
 
   Status RenameFile(const string& src, const string& target) override;
 
+  void FlushCaches() override;
+
  private:
   // Returns the member Vulture client, initializing as-needed.
   // When the client tries to access the object in Vulture, e.g.,
@@ -68,6 +71,13 @@ class VultureFileSystem : public FileSystem {
   // This Vulture Client does not support Virtual Hosted–Style Method
   // for a bucket.
   std::shared_ptr<VultureClient> GetVultureClient();
+
+  using StatCache = ExpiringLRUCache<FileStatistics>;
+  std::unique_ptr<StatCache> stat_cache_;
+
+  using MatchingPathsCache = ExpiringLRUCache<std::vector<string>>;
+  std::unique_ptr<MatchingPathsCache> matching_paths_cache_;
+
 
   std::shared_ptr<VultureClient> vulture_client_;
   // Lock held when checking for vulture_client_ initialization.

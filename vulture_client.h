@@ -15,7 +15,6 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_PLATFORM_VULTURE_VULTURE_CLIENT_H_
 #define TENSORFLOW_CORE_PLATFORM_VULTURE_VULTURE_CLIENT_H_
 #include "tensorflow/core/platform/cloud/curl_http_request.h"
-#include "tensorflow/core/platform/env.h"
 
 namespace tensorflow {
 class VultureClient {
@@ -28,7 +27,7 @@ class VultureClient {
 
     Status GetObject(const string &object, int64 offset, int64 n, StringPiece* result, char* scratch);
     Status StatObject(const string &object, FileStatistics *stats);
-    Status ListObjects(const string &object, std::vector<string>* result);
+    Status ListObjects(const string &object, std::map<string, FileStatistics>* result);
 
   private:
     Status CreateHttpRequest(std::unique_ptr<HttpRequest>* request);

@@ -12,19 +12,38 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+#include "tensorflow/core/lib/io/path.h"
+#include "tensorflow/core/platform/mutex.h"
+#include "tensorflow/core/lib/strings/str_util.h"
 #include "tensorflow/core/platform/vulture/vulture_client.h"
 #include "tensorflow/core/platform/vulture/vulture_file_system.h"
-#include "tensorflow/core/lib/io/path.h"
-#include "tensorflow/core/lib/strings/str_util.h"
-// #include "tensorflow/core/platform/file_system.h"
-#include "tensorflow/core/platform/mutex.h"
 
 #include <cstdlib>
 
 namespace tensorflow {
 
-static const size_t kVultureReadAppendableFileBufferSize = 1024 * 1024;
-static const int kVultureGetChildrenMaxKeys = 100;
+constexpr char kVultureVersion[] = "0.0.1";
+constexpr size_t kVultureReadAppendableFileBufferSize = 1024 * 1024;  // In bytes.
+// The environment variable that overrides the maximum age of entries in the
+// Stat cache. A value of 0 (the default) means nothing is cached.
+constexpr char kStatCacheMaxAge[] = "VULTURE_STAT_CACHE_MAX_AGE";
+constexpr uint64 kStatCacheDefaultMaxAge = 120;
+// The environment variable that overrides the maximum number of entries in the
+// Stat cache.
+constexpr char kStatCacheMaxEntries[] = "VULTURE_STAT_CACHE_MAX_ENTRIES";
+constexpr size_t kStatCacheDefaultMaxEntries = 10240;
+// The environment variable that overrides the maximum age of entries in the
+// GetMatchingPaths cache. A value of 0 (the default) means nothing is cached.
+constexpr char kMatchingPathsCacheMaxAge[] = "VULTURE_MATCHING_PATHS_CACHE_MAX_AGE";
+constexpr uint64 kMatchingPathsCacheDefaultMaxAge = 0;
+// The environment variable that overrides the maximum number of entries in the
+// GetMatchingPaths cache.
+constexpr char kMatchingPathsCacheMaxEntries[] =
+    "VULTURE_MATCHING_PATHS_CACHE_MAX_ENTRIES";
+constexpr size_t kMatchingPathsCacheDefaultMaxEntries = 1024;
+// The file statistics returned by Stat() for directories.
+const FileStatistics DIRECTORY_STAT(0, 0, true);
+
 
 namespace {
 
@@ -128,8 +147,59 @@ class VultureReadOnlyMemoryRegion : public ReadOnlyMemoryRegion {
 
 }  // namespace
 
+// Helper function to extract an environment variable and convert it into a
+// value of type T.
+template <typename T>
+bool GetEnvVar(const char* varname, bool (*convert)(StringPiece, T*),
+               T* value) {
+  const char* env_value = std::getenv(varname);
+  if (!env_value) {
+    return false;
+  }
+  return convert(env_value, value);
+}
+
+// Flushes all caches for filesystem metadata.
+// Useful for reclaiming memory once filesystem operations are done (e.g. model is loaded),
+// or for resetting the filesystem to a consistent state.
+void VultureFileSystem::FlushCaches() {
+  stat_cache_->Clear();
+  matching_paths_cache_->Clear();
+}
+
 VultureFileSystem::VultureFileSystem()
-  : vulture_client_(nullptr), client_lock_() {}
+  : vulture_client_(nullptr), client_lock_() {
+  uint64 value;
+
+  LOG(WARNING) << "Init the vulutre file system version: " << kVultureVersion << "..............";
+
+  // Apply overrides for the stat cache max age and max entries, if provided.
+  uint64 stat_cache_max_age = kStatCacheDefaultMaxAge;
+  size_t stat_cache_max_entries = kStatCacheDefaultMaxEntries;
+  if (GetEnvVar(kStatCacheMaxAge, strings::safe_strtou64, &value)) {
+    stat_cache_max_age = value;
+  }
+  if (GetEnvVar(kStatCacheMaxEntries, strings::safe_strtou64, &value)) {
+    stat_cache_max_entries = value;
+  }
+  stat_cache_.reset(new ExpiringLRUCache<FileStatistics>(
+      stat_cache_max_age, stat_cache_max_entries));
+
+  // Apply overrides for the matching paths cache max age and max entries, if
+  // provided.
+  uint64 matching_paths_cache_max_age = kMatchingPathsCacheDefaultMaxAge;
+  size_t matching_paths_cache_max_entries =
+      kMatchingPathsCacheDefaultMaxEntries;
+  if (GetEnvVar(kMatchingPathsCacheMaxAge, strings::safe_strtou64, &value)) {
+    matching_paths_cache_max_age = value;
+  }
+  if (GetEnvVar(kMatchingPathsCacheMaxEntries, strings::safe_strtou64,
+                &value)) {
+    matching_paths_cache_max_entries = value;
+  }
+  matching_paths_cache_.reset(new ExpiringLRUCache<std::vector<string>>(
+      matching_paths_cache_max_age, matching_paths_cache_max_entries));
+}
 
 VultureFileSystem::~VultureFileSystem() {}
 
@@ -223,9 +293,22 @@ Status VultureFileSystem::GetChildren(const string& dir, std::vector<string>* re
   }
 
   string object = io::JoinPath(bucket, prefix);
+  LOG(WARNING) << "List children: " << dir;
 
+  std::map<string, FileStatistics> objects;
   TF_RETURN_IF_ERROR(this->GetVultureClient()->ListObjects(
-        object, result));
+        object, &objects));
+
+  // Insert every object into `stat_cache_'
+  std::map<std::string, FileStatistics>::iterator it = objects.begin();
+  while(it != objects.end()) {
+    result->push_back(it->first);
+    string key = io::JoinPath(object, it->first);
+    LOG(WARNING) << "Insert stat_cache : " << key;
+    this->stat_cache_->Insert(key, it->second);
+    it++;
+  }
+
   return Status::OK();
 }
 
@@ -235,9 +318,15 @@ Status VultureFileSystem::Stat(const string& fname, FileStatistics* stats) {
 
   object = io::JoinPath(bucket, object);
 
-  TF_RETURN_IF_ERROR(this->GetVultureClient()->StatObject(
-        object, stats));
+  StatCache::ComputeFunc compute_func = [this, &object](
+                                            const string& fname,
+                                            FileStatistics* stats) {
+    TF_RETURN_WITH_CONTEXT_IF_ERROR(this->GetVultureClient()->StatObject(object, stats),
+                                    " when stat obejct: ", object);
+    return Status::OK();
+  };
 
+  TF_RETURN_IF_ERROR(this->stat_cache_->LookupOrCompute(object, stats, compute_func));
   return Status::OK();
 }
 
