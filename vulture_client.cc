@@ -15,7 +15,6 @@ limitations under the License.
 #include "include/json/json.h"
 #include "tensorflow/core/lib/io/path.h"
 #include "tensorflow/core/platform/vulture/vulture_client.h"
-#include "tensorflow/core/platform/cloud/curl_http_request.h"
 
 namespace tensorflow {
 
@@ -110,14 +109,14 @@ Status GetBoolValue(const Json::Value& parent, const char* name, bool* result) {
 
 VultureClient::VultureClient()
     : VultureClient(
-        std::unique_ptr<HttpRequest::Factory>(new CurlHttpRequest::Factory()),
+        std::shared_ptr<HttpRequest::Factory>(new VultureHttpRequest::Factory()),
         Env::Default()
         ) {}
 
 VultureClient::VultureClient(
-    std::unique_ptr<HttpRequest::Factory> http_request_factory,
+    std::shared_ptr<HttpRequest::Factory> http_request_factory,
     Env* env)
-    : http_request_factory_(std::move(http_request_factory)), env_(env) {
+    : http_request_factory_(http_request_factory), env_(env) {
 
   this->endpoint_ = "http://127.0.0.1:3120";
   const char* endpoint = getenv("VULTURE_ENDPOINT");
@@ -151,20 +150,24 @@ VultureClient::~VultureClient() {}
 // Creates an HttpRequest and sets several parameters that are common to all
 // requests.  All code (in GcsFileSystem) that creates an HttpRequest should
 // go through this method, rather than directly using http_request_factory_.
-Status VultureClient::CreateHttpRequest(std::unique_ptr<HttpRequest>* request) {
-  std::unique_ptr<HttpRequest> new_request{http_request_factory_->Create()};
+Status VultureClient::CreateHttpRequest(std::shared_ptr<HttpRequest>* request) {
+  if (this->request_ == nullptr) {
+    std::shared_ptr<HttpRequest> new_request{http_request_factory_->Create()};
 
-  new_request->AddHeader("User-Agent", "Vulture-TF");
+    new_request->AddHeader("User-Agent", "Vulture-TF");
 
-  // TODO: maybe add auth header
+    // TODO: maybe add auth header
 
-  *request = std::move(new_request);
+    this->request_ = new_request;
+  }
+
+  *request = this->request_;
+
   return Status::OK();
 }
 
-
 Status VultureClient::GetObject(const string &object, int64 offset, int64 n, StringPiece* result, char* scratch) {
-  std::unique_ptr<HttpRequest> request;
+  std::shared_ptr<HttpRequest> request;
   TF_RETURN_IF_ERROR(CreateHttpRequest(&request));
 
   // std::vector<char> response_buffer;
@@ -192,7 +195,7 @@ Status VultureClient::GetObject(const string &object, int64 offset, int64 n, Str
 }
 
 Status VultureClient::StatObject(const string &object, FileStatistics *stats) {
-  std::unique_ptr<HttpRequest> request;
+  std::shared_ptr<HttpRequest> request;
   TF_RETURN_IF_ERROR(CreateHttpRequest(&request));
 
   std::vector<char> response_buffer;
@@ -239,7 +242,7 @@ Status VultureClient::ListObjects(const string &object, std::map<string, FileSta
 
   string iter;
   while(true) {
-    std::unique_ptr<HttpRequest> request;
+    std::shared_ptr<HttpRequest> request;
     TF_RETURN_IF_ERROR(CreateHttpRequest(&request));
 
     std::vector<char> response_buffer;

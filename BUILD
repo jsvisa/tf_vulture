@@ -15,12 +15,6 @@ load(
 
 tf_cc_binary(
     name = "vulture_file_system.so",
-    srcs = [
-        "vulture_client.cc",
-        "vulture_client.h",
-        "vulture_file_system.cc",
-        "vulture_file_system.h",
-    ],
     copts = ["-Wno-sign-compare"],
     defines = select({
         "//conditions:default": [
@@ -30,12 +24,13 @@ tf_cc_binary(
     }),
     linkshared = 1,
     deps = [
+        ":vulture_client",
+        ":vulture_file_system",
         "//tensorflow/core:framework_headers_lib",
-        "@curl",
-        "@protobuf_archive//:protobuf_headers",
-        "@jsoncpp_git//:jsoncpp",
-        "//tensorflow/core/platform/cloud:curl_http_request",
         "//tensorflow/core/platform/cloud:expiring_lru_cache",
+        "@curl",
+        "@jsoncpp_git//:jsoncpp",
+        "@protobuf_archive//:protobuf_headers",
     ],
 )
 
@@ -48,13 +43,29 @@ cc_library(
         "vulture_client.h",
     ],
     deps = [
+        ":vulture_http_request",
         "//tensorflow/core:lib",
         "//tensorflow/core:lib_internal",
+        "//tensorflow/core:framework_headers_lib",
         "@curl",
         "@jsoncpp_git//:jsoncpp",
-        "//tensorflow/core/platform/cloud:curl_http_request",
     ],
     alwayslink = 1,
+)
+
+cc_library(
+    name = "vulture_http_request",
+    srcs = [
+        "vulture_http_request.cc"
+    ],
+    hdrs = [
+        "vulture_http_request.h"
+    ],
+    deps = [
+        "//tensorflow/core:lib_internal",
+        "//tensorflow/core/platform/cloud:http_request",
+        "@curl",
+    ],
 )
 
 cc_library(
@@ -66,9 +77,9 @@ cc_library(
         "vulture_file_system.h",
     ],
     deps = [
+        ":vulture_client",
         "//tensorflow/core:lib",
         "//tensorflow/core:lib_internal",
-        "//tensorflow/core/platform/cloud:curl_http_request",
         "//tensorflow/core/platform/cloud:expiring_lru_cache",
     ],
     alwayslink = 1,

@@ -14,14 +14,14 @@ limitations under the License.
 ==============================================================================*/
 #ifndef TENSORFLOW_CORE_PLATFORM_VULTURE_VULTURE_CLIENT_H_
 #define TENSORFLOW_CORE_PLATFORM_VULTURE_VULTURE_CLIENT_H_
-#include "tensorflow/core/platform/cloud/curl_http_request.h"
+#include "tensorflow/core/platform/vulture/vulture_http_request.h"
 
 namespace tensorflow {
 class VultureClient {
   public:
     VultureClient();
     explicit VultureClient(
-        std::unique_ptr<HttpRequest::Factory> http_request_factory,
+        std::shared_ptr<HttpRequest::Factory> http_request_factory,
         Env *env);
     ~VultureClient();
 
@@ -30,8 +30,9 @@ class VultureClient {
     Status ListObjects(const string &object, std::map<string, FileStatistics>* result);
 
   private:
-    Status CreateHttpRequest(std::unique_ptr<HttpRequest>* request);
-    std::unique_ptr<HttpRequest::Factory> http_request_factory_;
+    Status CreateHttpRequest(std::shared_ptr<HttpRequest>* request);
+    std::shared_ptr<HttpRequest::Factory> http_request_factory_;
+    std::shared_ptr<HttpRequest> request_;
     Env* env_;
     string endpoint_;
     long connectTimeoutMs_;
