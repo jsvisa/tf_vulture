@@ -142,42 +142,33 @@ VultureClient::VultureClient(
     }
   }
 
+  this->request_ = CreateHttpRequest();
 }
 
 
 VultureClient::~VultureClient() {}
 
-// Creates an HttpRequest and sets several parameters that are common to all
-// requests.  All code (in GcsFileSystem) that creates an HttpRequest should
-// go through this method, rather than directly using http_request_factory_.
-Status VultureClient::CreateHttpRequest(std::shared_ptr<HttpRequest>* request) {
-  if (this->request_ == nullptr) {
-    std::shared_ptr<HttpRequest> new_request{http_request_factory_->Create()};
+// Creates an HttpRequest and sets several parameters
+// that are common to all requests.
+std::shared_ptr<HttpRequest> VultureClient::CreateHttpRequest() {
+  std::shared_ptr<HttpRequest> request{http_request_factory_->Create()};
 
-    new_request->AddHeader("User-Agent", "Vulture-TF");
+  request->AddHeader("User-Agent", "Vulture-TF");
 
-    // TODO: maybe add auth header
+  // TODO: maybe add auth header
+  // Connection timeout
 
-    this->request_ = new_request;
-  }
-
-  *request = this->request_;
-
-  return Status::OK();
+  return request;
 }
 
 Status VultureClient::GetObject(const string &object, int64 offset, int64 n, StringPiece* result, char* scratch) {
-  std::shared_ptr<HttpRequest> request;
-  TF_RETURN_IF_ERROR(CreateHttpRequest(&request));
+  const string url = JoinPath(endpoint_, object);
+  request_->SetUri(url);
+  request_->SetRange(offset, offset + n - 1);
+  request_->SetResultBufferDirect(scratch, n);
+  TF_RETURN_IF_ERROR(request_->Send());
 
-  // std::vector<char> response_buffer;
-  const string url = JoinPath(this->endpoint_, object);
-  request->SetUri(url);
-  request->SetRange(offset, offset + n - 1);
-  request->SetResultBufferDirect(scratch, n);
-  TF_RETURN_IF_ERROR(request->Send());
-
-  uint64 response_code = request->GetResponseCode();
+  uint64 response_code = request_->GetResponseCode();
 
   if (response_code /100 != 2) {
     switch (response_code) {
@@ -195,18 +186,15 @@ Status VultureClient::GetObject(const string &object, int64 offset, int64 n, Str
 }
 
 Status VultureClient::StatObject(const string &object, FileStatistics *stats) {
-  std::shared_ptr<HttpRequest> request;
-  TF_RETURN_IF_ERROR(CreateHttpRequest(&request));
-
   std::vector<char> response_buffer;
-  string url = JoinPath(this->endpoint_, object);
+  string url = JoinPath(endpoint_, object);
   url = strings::StrCat(url, "?stat=true");
-  request->SetUri(url);
-  request->SetResultBuffer(&response_buffer);
-  TF_RETURN_IF_ERROR(request->Send());
+  request_->SetUri(url);
+  request_->SetResultBuffer(&response_buffer);
+  TF_RETURN_IF_ERROR(request_->Send());
   LOG(WARNING) << "Stat Object: " << object;
 
-  uint64 response_code = request->GetResponseCode();
+  uint64 response_code = request_->GetResponseCode();
 
   if (response_code /100 != 2) {
     switch (response_code) {
@@ -239,21 +227,18 @@ Status VultureClient::StatObject(const string &object, FileStatistics *stats) {
 }
 
 Status VultureClient::ListObjects(const string &object, std::map<string, FileStatistics>* result) {
-
   string iter;
-  while(true) {
-    std::shared_ptr<HttpRequest> request;
-    TF_RETURN_IF_ERROR(CreateHttpRequest(&request));
 
+  while(true) {
     std::vector<char> response_buffer;
-    string url = JoinPath(this->endpoint_, object);
+    string url = JoinPath(endpoint_, object);
     url = strings::StrCat(url, "?list=true&limit=", kVultureListLimit, "&iter=", iter);
-    request->SetUri(url);
-    request->SetResultBuffer(&response_buffer);
-    TF_RETURN_IF_ERROR(request->Send());
+    request_->SetUri(url);
+    request_->SetResultBuffer(&response_buffer);
+    TF_RETURN_IF_ERROR(request_->Send());
     LOG(WARNING) << "list url is " << url;
 
-    uint64 response_code = request->GetResponseCode();
+    uint64 response_code = request_->GetResponseCode();
 
     if (response_code /100 != 2) {
       return Status(error::INTERNAL, "List objects return not 2xx");

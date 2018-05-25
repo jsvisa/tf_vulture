@@ -28,10 +28,18 @@ constexpr size_t kVultureReadAppendableFileBufferSize = 1024 * 1024;  // In byte
 // Stat cache. A value of 0 (the default) means nothing is cached.
 constexpr char kStatCacheMaxAge[] = "VULTURE_STAT_CACHE_MAX_AGE";
 constexpr uint64 kStatCacheDefaultMaxAge = 120;
-// The environment variable that overrides the maximum number of entries in the
-// Stat cache.
+// The environment variable that overrides
+// the maximum number of entries in the Stat cache.
 constexpr char kStatCacheMaxEntries[] = "VULTURE_STAT_CACHE_MAX_ENTRIES";
 constexpr size_t kStatCacheDefaultMaxEntries = 10240;
+// The environment variable that overrides
+// the http pool initial size.
+constexpr char kPoolSize[] = "VULTURE_POOL_SIZE";
+constexpr size_t kPoolDefaultSize = 10;
+// The environment variable that overrides
+// the http pool overflow size.
+constexpr char kPoolOverflow[] = "VULTURE_POOL_OVERFLOW";
+constexpr size_t kPoolDefaultOverflow = 2;
 // The environment variable that overrides the maximum age of entries in the
 // GetMatchingPaths cache. A value of 0 (the default) means nothing is cached.
 constexpr char kMatchingPathsCacheMaxAge[] = "VULTURE_MATCHING_PATHS_CACHE_MAX_AGE";
@@ -82,9 +90,7 @@ class VultureRandomAccessFile : public RandomAccessFile {
   Status Read(uint64 offset, size_t n, StringPiece* result,
               char* scratch) const override {
     string object = io::JoinPath(bucket_, object_);
-    // LOG(INFO) << "Read " << object << " with offset: " << offset << " and size: " << n;
-    TF_RETURN_IF_ERROR(this->vulture_client_->GetObject(
-          object, offset, n, result, scratch));
+    TF_RETURN_IF_ERROR(this->vulture_client_->GetObject(object, offset, n, result, scratch));
     return Status::OK();
   }
 
@@ -150,8 +156,7 @@ class VultureReadOnlyMemoryRegion : public ReadOnlyMemoryRegion {
 // Helper function to extract an environment variable and convert it into a
 // value of type T.
 template <typename T>
-bool GetEnvVar(const char* varname, bool (*convert)(StringPiece, T*),
-               T* value) {
+bool GetEnvVar(const char* varname, bool (*convert)(StringPiece, T*), T* value) {
   const char* env_value = std::getenv(varname);
   if (!env_value) {
     return false;
@@ -168,7 +173,7 @@ void VultureFileSystem::FlushCaches() {
 }
 
 VultureFileSystem::VultureFileSystem()
-  : vulture_client_(nullptr), client_lock_() {
+  : client_lock_() {
   uint64 value;
 
   LOG(WARNING) << "Init the vulutre file system version: " << kVultureVersion << "..............";
@@ -199,27 +204,60 @@ VultureFileSystem::VultureFileSystem()
   }
   matching_paths_cache_.reset(new ExpiringLRUCache<std::vector<string>>(
       matching_paths_cache_max_age, matching_paths_cache_max_entries));
+
+  size_t pool_size = kPoolDefaultSize;
+  if (GetEnvVar(kPoolSize, strings::safe_strtou64, &value)) {
+    pool_size = value;
+  }
+  pool_size_ = pool_size;
+
+  size_t pool_overflow = kPoolDefaultOverflow;
+  if (GetEnvVar(kPoolOverflow, strings::safe_strtou64, &value)) {
+    pool_overflow = value;
+  }
+  pool_overflow_ = pool_overflow;
+
+  while (pool_.size() < pool_size_) {
+    auto client = std::shared_ptr<VultureClient>(new VultureClient());
+    pool_.push_back(client);
+  }
 }
 
-VultureFileSystem::~VultureFileSystem() {}
+VultureFileSystem::~VultureFileSystem() {
+  while (pool_.size()) {
+    pool_.pop_front();
+  }
+}
 
-// Initializes vulture_client_, if needed, and returns it.
 std::shared_ptr<VultureClient> VultureFileSystem::GetVultureClient() {
   std::lock_guard<mutex> lock(this->client_lock_);
 
-  // TODO: lock?
-  if (this->vulture_client_ == nullptr) {
-    this->vulture_client_ = std::shared_ptr<VultureClient>(new VultureClient());
+  // LOG(WARNING) << "Before GET, current pool size: " << pool_.size();
+  if (this->pool_.size()) {
+    std::shared_ptr<VultureClient> client = this->pool_.front();
+    this->pool_.pop_front();
+    return client;
   }
 
-  return this->vulture_client_;
+  // FIXME: limit the number of temp client
+  return std::shared_ptr<VultureClient>(new VultureClient());
+}
+
+void VultureFileSystem::PutVultureClient(std::shared_ptr<VultureClient> client) {
+  // LOG(WARNING) << "Before PUT, Current pool size: " << pool_.size();
+  std::lock_guard<mutex> lock(this->client_lock_);
+  this->pool_.push_back(client);
 }
 
 Status VultureFileSystem::NewRandomAccessFile(
     const string& fname, std::unique_ptr<RandomAccessFile>* result) {
   string bucket, object;
   TF_RETURN_IF_ERROR(ParseVulturePath(fname, false, &bucket, &object));
-  result->reset(new VultureRandomAccessFile(bucket, object, this->GetVultureClient()));
+
+  auto client = GetVultureClient();
+  result->reset(new VultureRandomAccessFile(bucket, object, client));
+  PutVultureClient(client);
+
   return Status::OK();
 }
 
@@ -227,7 +265,11 @@ Status VultureFileSystem::NewWritableFile(
     const string& fname, std::unique_ptr<WritableFile>* result) {
   string bucket, object;
   TF_RETURN_IF_ERROR(ParseVulturePath(fname, false, &bucket, &object));
-  result->reset(new VultureWritableFile(bucket, object, this->GetVultureClient()));
+
+  auto client = GetVultureClient();
+  result->reset(new VultureWritableFile(bucket, object, client));
+  PutVultureClient(client);
+
   return Status::OK();
 }
 
@@ -242,11 +284,13 @@ Status VultureFileSystem::NewAppendableFile(
 
   string bucket, object;
   TF_RETURN_IF_ERROR(ParseVulturePath(fname, false, &bucket, &object));
-  result->reset(new VultureWritableFile(bucket, object, this->GetVultureClient()));
+
+  auto client = GetVultureClient();
+  result->reset(new VultureWritableFile(bucket, object, client));
+  PutVultureClient(client);
 
   while (true) {
-    status = reader->Read(offset, kVultureReadAppendableFileBufferSize, &read_chunk,
-                          buffer.get());
+    status = reader->Read(offset, kVultureReadAppendableFileBufferSize, &read_chunk, buffer.get());
     if (status.ok()) {
       (*result)->Append(read_chunk);
       offset += kVultureReadAppendableFileBufferSize;
@@ -296,8 +340,9 @@ Status VultureFileSystem::GetChildren(const string& dir, std::vector<string>* re
   LOG(WARNING) << "List children: " << dir;
 
   std::map<string, FileStatistics> objects;
-  TF_RETURN_IF_ERROR(this->GetVultureClient()->ListObjects(
-        object, &objects));
+
+  auto client = GetVultureClient();
+  VULTURE_RETURN_IF_ERROR(client->ListObjects(object, &objects), PutVultureClient(client));
 
   // Insert every object into `stat_cache_'
   std::map<std::string, FileStatistics>::iterator it = objects.begin();
@@ -321,8 +366,9 @@ Status VultureFileSystem::Stat(const string& fname, FileStatistics* stats) {
   StatCache::ComputeFunc compute_func = [this, &object](
                                             const string& fname,
                                             FileStatistics* stats) {
-    TF_RETURN_WITH_CONTEXT_IF_ERROR(this->GetVultureClient()->StatObject(object, stats),
-                                    " when stat obejct: ", object);
+    auto client = GetVultureClient();
+    VULTURE_RETURN_IF_ERROR(client->StatObject(object, stats), PutVultureClient(client));
+
     return Status::OK();
   };
 
@@ -366,18 +412,17 @@ Status VultureFileSystem::GetFileSize(const string& fname, uint64* file_size) {
   return Status::OK();
 }
 
-Status VultureFileSystem::RenameFile(const string& src, const string& target) {
-  string src_bucket, src_object, target_bucket, target_object;
+Status VultureFileSystem::RenameFile(const string& src, const string& dst) {
+  string src_bucket, src_object, dst_bucket, dst_object;
   TF_RETURN_IF_ERROR(ParseVulturePath(src, false, &src_bucket, &src_object));
-  TF_RETURN_IF_ERROR(
-      ParseVulturePath(target, false, &target_bucket, &target_object));
+  TF_RETURN_IF_ERROR(ParseVulturePath(dst, false, &dst_bucket, &dst_object));
   if (src_object.back() == '/') {
-    if (target_object.back() != '/') {
-      target_object.push_back('/');
+    if (dst_object.back() != '/') {
+      dst_object.push_back('/');
     }
   } else {
-    if (target_object.back() == '/') {
-      target_object.pop_back();
+    if (dst_object.back() == '/') {
+      dst_object.pop_back();
     }
   }
 

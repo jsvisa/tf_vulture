@@ -30,7 +30,7 @@ class VultureClient {
     Status ListObjects(const string &object, std::map<string, FileStatistics>* result);
 
   private:
-    Status CreateHttpRequest(std::shared_ptr<HttpRequest>* request);
+    std::shared_ptr<HttpRequest> CreateHttpRequest();
     std::shared_ptr<HttpRequest::Factory> http_request_factory_;
     std::shared_ptr<HttpRequest> request_;
     Env* env_;

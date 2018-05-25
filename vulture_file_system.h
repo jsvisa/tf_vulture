@@ -19,6 +19,9 @@ limitations under the License.
 #include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/platform/cloud/expiring_lru_cache.h"
 #include "tensorflow/core/platform/vulture/vulture_client.h"
+// #include "tensorflow/core/platform/vulture/vulture_pool.h"
+
+#include <deque>
 
 namespace tensorflow {
 
@@ -27,8 +30,8 @@ class VultureFileSystem : public FileSystem {
   VultureFileSystem();
   ~VultureFileSystem();
 
-  Status NewRandomAccessFile(
-      const string& fname, std::unique_ptr<RandomAccessFile>* result) override;
+  Status NewRandomAccessFile(const string& fname,
+                             std::unique_ptr<RandomAccessFile>* result) override;
 
   Status NewWritableFile(const string& fname,
                          std::unique_ptr<WritableFile>* result) override;
@@ -36,9 +39,8 @@ class VultureFileSystem : public FileSystem {
   Status NewAppendableFile(const string& fname,
                            std::unique_ptr<WritableFile>* result) override;
 
-  Status NewReadOnlyMemoryRegionFromFile(
-      const string& fname,
-      std::unique_ptr<ReadOnlyMemoryRegion>* result) override;
+  Status NewReadOnlyMemoryRegionFromFile(const string& fname,
+                                         std::unique_ptr<ReadOnlyMemoryRegion>* result) override;
 
   Status FileExists(const string& fname) override;
 
@@ -46,8 +48,7 @@ class VultureFileSystem : public FileSystem {
 
   Status Stat(const string& fname, FileStatistics* stat) override;
 
-  Status GetMatchingPaths(const string& pattern,
-                          std::vector<string>* results) override;
+  Status GetMatchingPaths(const string& pattern, std::vector<string>* results) override;
 
   Status DeleteFile(const string& fname) override;
 
@@ -71,6 +72,7 @@ class VultureFileSystem : public FileSystem {
   // This Vulture Client does not support Virtual Hosted–Style Method
   // for a bucket.
   std::shared_ptr<VultureClient> GetVultureClient();
+  void PutVultureClient(std::shared_ptr<VultureClient> client);
 
   using StatCache = ExpiringLRUCache<FileStatistics>;
   std::unique_ptr<StatCache> stat_cache_;
@@ -78,11 +80,20 @@ class VultureFileSystem : public FileSystem {
   using MatchingPathsCache = ExpiringLRUCache<std::vector<string>>;
   std::unique_ptr<MatchingPathsCache> matching_paths_cache_;
 
+  size_t pool_size_;
+  size_t pool_overflow_;
+  std::deque<std::shared_ptr<VultureClient> > pool_;
 
-  std::shared_ptr<VultureClient> vulture_client_;
   // Lock held when checking for vulture_client_ initialization.
   mutex client_lock_;
 };
+
+#define VULTURE_RETURN_IF_ERROR(_action, _backof, ...)   \
+  do {                                                   \
+    auto _status = _action;                              \
+    _backof;                                             \
+    if (TF_PREDICT_FALSE(!_status.ok())) return _status; \
+  } while (0)
 
 }  // namespace tensorflow
 
