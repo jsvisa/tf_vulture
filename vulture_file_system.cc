@@ -363,10 +363,10 @@ Status VultureFileSystem::Stat(const string& fname, FileStatistics* stats) {
 
   object = io::JoinPath(bucket, object);
 
-  StatCache::ComputeFunc compute_func = [this, &object](
+  auto client = GetVultureClient();
+  StatCache::ComputeFunc compute_func = [this, &object, &client](
                                             const string& fname,
                                             FileStatistics* stats) {
-    auto client = GetVultureClient();
     VULTURE_RETURN_IF_ERROR(client->StatObject(object, stats), PutVultureClient(client));
 
     return Status::OK();
